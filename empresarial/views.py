@@ -1,0 +1,87 @@
+from django.shortcuts import render, redirect
+from django.contrib.auth.models import User
+from django.db.models.functions import Concat
+from django.db.models import Value
+from django.contrib.admin.views.decorators import staff_member_required
+from exames.models import SolicitacaoExame
+from django.http import HttpResponse, FileResponse
+from .utils import gerar_pdf_exames, gerar_senha_aleatoria
+from django.contrib import messages
+from django.contrib.messages import constants
+from django.db.models import Q
+from exames.models import PedidosExames
+
+@staff_member_required
+def gerenciar_clientes(request):
+    clientes = User.objects.filter(is_staff=False)
+
+    nome_completo = request.GET.get('nome')
+    email = request.GET.get('email')
+
+    if email:
+        clientes = clientes.filter(email__contains=email)
+
+    if nome_completo:
+        clientes = clientes.filter(Q(first_name__icontains=nome_completo) | Q(last_name__icontains=nome_completo))
+
+    return render(request, 'gerenciar_clientes.html', {'clientes':clientes})
+
+@staff_member_required
+def cliente(request, cliente_id):
+    cliente = User.objects.get(id=cliente_id)
+    exames = SolicitacaoExame.objects.filter(usuario=cliente)
+
+    return render(request, 'cliente.html', {'cliente':cliente, 'exames':exames})
+
+@staff_member_required
+def exame_cliente(request, exame_id):
+    exame = SolicitacaoExame.objects.get(id=exame_id)
+    return render(request, 'exame_cliente.html', {'exame':exame})
+
+
+def proxy_pdf(request, exame_id):
+    exame = SolicitacaoExame.objects.get(id=exame_id)
+    
+    response = exame.resultado.open()
+
+    return HttpResponse(response)
+
+def gerar_senha(request, exame_id):
+    exame = SolicitacaoExame.objects.get(id=exame_id)
+
+    if exame.senha:
+        return FileResponse(gerar_pdf_exames(exame.exame.nome, exame.usuario.first_name, exame.senha), filename="token.pdf")
+    
+    exame.senha = gerar_senha_aleatoria(6)
+    exame.save()
+    return FileResponse(gerar_pdf_exames(exame.exame.nome, exame.usuario.first_name, exame.senha), filename="token.pdf")
+
+
+@staff_member_required 
+def alterar_dados_exame(request, exame_id):
+    exame = SolicitacaoExame.objects.get(id=exame_id)
+    Agenexame = PedidosExames.objects.filter(exames=exame).first()
+
+    pdf = request.FILES.get('resultado')
+    status = request.POST.get('status')
+    requer_senha = request.POST.get('requer_senha')
+    
+    if requer_senha and (not exame.senha):
+        messages.add_message(request, constants.ERROR, 'Para exigir a senha primeiro crie uma.')
+        return redirect(f'/empresarial/exame_cliente/{exame_id}')
+    
+    exame.requer_senha = True if requer_senha else False
+
+    if pdf:
+        exame.resultado = pdf
+    if Agenexame:  
+        if status == 'F':
+            Agenexame.agendado = False
+        else:
+            Agenexame.agendado = True
+        Agenexame.save()
+        
+    exame.status = status
+    exame.save()
+    messages.add_message(request, constants.SUCCESS, 'Alteração realizada com sucesso')
+    return redirect(f'/empresarial/exame_cliente/{exame_id}')
